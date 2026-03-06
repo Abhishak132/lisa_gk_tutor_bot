@@ -1,82 +1,79 @@
 """
 🎓 LISA GK TUTOR BOT — Telegram Bot
-====================================
-Lisa (Odisha TV) jaisa Hinglish GK Tutor Bot
-Powered by Google Gemini AI (Free)
-Railway.app pe deploy kiya gaya
+Railway.app pe deploy | New google-genai package
 """
 
 import os
 import logging
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters,
 )
 
-# ============================================================
-# 🔑 API KEYS — Railway Environment Variables se aayengi
-# ============================================================
+# API KEYS
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 if not TELEGRAM_TOKEN or not GEMINI_API_KEY:
     raise ValueError("TELEGRAM_TOKEN aur GEMINI_API_KEY environment variables set karo!")
 
-# ============================================================
-# LISA KA PERSONALITY PROMPT
-# ============================================================
+# GEMINI SETUP (new SDK)
+client = genai.Client(api_key=GEMINI_API_KEY)
+
 LISA_SYSTEM_PROMPT = """
 Tu "Lisa" hai — ek friendly, smart aur energetic AI GK Tutor.
-Tu Odisha TV ki Lisa ki tarah bolti hai — confident, warm aur helpful.
+Hinglish mein baat kar (Hindi + English mix).
+Har jawab simple, clear aur easy-to-understand ho.
+Examples se samjhao, students ko encourage karo, emojis use karo (par zyada nahi).
 
-Teri style:
-- Hinglish mein baat kar (Hindi + English mix)
-- Har jawab simple aur easy-to-understand ho
-- Examples se samjhao
-- Kabhi kabhi fun facts bhi batao
-- Students ko encourage karo
-- Emojis use karo (par zyada nahi)
-- Agar koi GK question pooche to seedha, clear jawab do
-- Agar koi topic explain karne ko bole to step-by-step samjhao
+Tere subjects: Indian History, Geography, Science & Technology,
+Current Affairs, Indian Polity & Constitution, Economy, Sports & Awards.
 
-Tere subjects:
-- Indian History & Culture
-- Geography (India + World)
-- Science & Technology
-- Current Affairs
-- Indian Polity & Constitution
-- Economy
-- Sports, Awards, Books
-- General Awareness
-
-Agar koi non-GK cheez pooche, politely bolo:
-"Yaar, main sirf GK ki expert hoon. Koi GK question pooch!"
-
-Hamesha response ke end mein ek related fun fact ya follow-up question add karo.
+Agar koi non-GK cheez pooche: "Yaar, main sirf GK ki expert hoon. Koi GK question pooch!"
+Hamesha response ke end mein ek fun fact ya follow-up question add karo.
 """
 
-# ============================================================
-# GEMINI SETUP
-# ============================================================
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    model_name="gemini-1.5-flash",
-    system_instruction=LISA_SYSTEM_PROMPT,
-)
-
-user_sessions = {}
+# Per-user chat history (list of dicts)
+user_histories = {}
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+
+def ask_lisa(user_id: int, user_text: str) -> str:
+    """Gemini se response lo, history maintain karo."""
+    if user_id not in user_histories:
+        user_histories[user_id] = []
+
+    # User message add karo history mein
+    user_histories[user_id].append(
+        types.Content(role="user", parts=[types.Part(text=user_text)])
+    )
+
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        config=types.GenerateContentConfig(system_instruction=LISA_SYSTEM_PROMPT),
+        contents=user_histories[user_id],
+    )
+
+    reply = response.text
+
+    # Assistant reply bhi history mein save karo
+    user_histories[user_id].append(
+        types.Content(role="model", parts=[types.Part(text=reply)])
+    )
+
+    # History zyada badi na ho — last 20 messages rakh
+    if len(user_histories[user_id]) > 20:
+        user_histories[user_id] = user_histories[user_id][-20:]
+
+    return reply
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,48 +102,45 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def quiz_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎯 Ek second... main ek question dhundh rahi hoon!")
-    quiz_prompt = (
-        "Ek GK quiz question banao in format mein:\n"
-        "Question: [question yahan]\n\n"
-        "A) [option]\nB) [option]\nC) [option]\nD) [option]\n\n"
-        "Sirf question aur options do, answer mat do abhi. "
-        "Topic random rakh — history, geo, science, current affairs mein se kuch bhi."
-    )
     try:
-        response = model.generate_content(quiz_prompt)
-        await update.message.reply_text(response.text)
-        await update.message.reply_text("Jawab btao! A, B, C ya D? 🤔\n(Jawab ke baad main explain karungi)")
+        user_id = update.effective_user.id
+        quiz_prompt = (
+            "Ek GK quiz question banao:\n"
+            "Question: [question]\n"
+            "A) ...\nB) ...\nC) ...\nD) ...\n\n"
+            "Sirf question aur options do, answer mat do."
+        )
+        reply = ask_lisa(user_id, quiz_prompt)
+        await update.message.reply_text(reply)
+        await update.message.reply_text("Jawab btao! A, B, C ya D? 🤔")
         context.user_data["quiz_mode"] = True
-        context.user_data["last_quiz"] = response.text
+        context.user_data["last_quiz"] = reply
     except Exception as e:
-        await update.message.reply_text("Oops! Kuch gadbad ho gayi. Dobara try karo 😅")
-        logger.error(f"Quiz error: {e}")
+        logger.error(f"Quiz error: {type(e).__name__}: {e}")
+        await update.message.reply_text(f"Error: {type(e).__name__}: {str(e)[:300]}")
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     topic_map = {
-        "topic_history": "Indian History ke baare mein 5 important points batao aur ek interesting question pooch",
-        "topic_geo": "India/World Geography ke baare mein kuch interesting facts batao aur ek question pooch",
-        "topic_science": "Science & Technology ke baare mein kuch cool facts batao — space, inventions, ya discoveries",
-        "topic_current": "Recent current affairs 2024-2025 ke baare mein important points batao",
-        "topic_polity": "Indian Constitution aur Polity ke baare mein important points samjhao",
-        "topic_sports": "Sports achievements aur recent awards ke baare mein batao",
-        "quiz_random": "Ek random GK quiz question do with 4 options (A, B, C, D format mein)",
+        "topic_history": "Indian History ke 5 interesting points batao aur ek question pooch",
+        "topic_geo": "India/World Geography ke interesting facts batao aur ek question pooch",
+        "topic_science": "Science & Technology ke cool facts batao — space, inventions, discoveries",
+        "topic_current": "Recent current affairs 2024-2025 ke important points batao",
+        "topic_polity": "Indian Constitution aur Polity ke important points samjhao",
+        "topic_sports": "Recent sports achievements aur awards ke baare mein batao",
+        "quiz_random": "Ek random GK quiz question do with 4 options (A, B, C, D)",
     }
-    user_message = topic_map.get(query.data, "Namaste! Kya poochna chahte ho?")
-    await query.message.reply_text("Sooch rahi hoon...")
+    user_message = topic_map.get(query.data, "Namaste!")
+    await query.message.reply_text("Sooch rahi hoon... ⏳")
     try:
         user_id = query.from_user.id
-        if user_id not in user_sessions:
-            user_sessions[user_id] = model.start_chat(history=[])
-        chat = user_sessions[user_id]
-        response = chat.send_message(user_message)
-        await query.message.reply_text(response.text)
+        reply = ask_lisa(user_id, user_message)
+        await query.message.reply_text(reply)
     except Exception as e:
-        await query.message.reply_text("Thodi si problem aayi! Dobara try karo 🙏")
-        logger.error(f"Button handler error: {e}")
+        logger.error(f"Button error: {type(e).__name__}: {e}")
+        await query.message.reply_text(f"Error: {type(e).__name__}: {str(e)[:300]}")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -154,54 +148,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_text = update.message.text
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
-        if user_id not in user_sessions:
-            user_sessions[user_id] = model.start_chat(history=[])
-        chat = user_sessions[user_id]
         if context.user_data.get("quiz_mode") and user_text.upper() in ["A", "B", "C", "D"]:
             last_quiz = context.user_data.get("last_quiz", "")
-            full_prompt = (
-                f"Previous quiz question tha:\n{last_quiz}\n\n"
-                f"User ne answer diya: {user_text.upper()}\n\n"
-                "Ab: 1. Sahi answer batao 2. Agar sahi tha encourage karo 3. Agar galat tha gently correct karo aur explain karo"
+            prompt = (
+                f"Quiz question tha:\n{last_quiz}\n\n"
+                f"User ka answer: {user_text.upper()}\n\n"
+                "Sahi answer batao, explain karo, aur encourage karo."
             )
-            response = chat.send_message(full_prompt)
             context.user_data["quiz_mode"] = False
+            reply = ask_lisa(user_id, prompt)
         else:
-            response = chat.send_message(user_text)
-        reply = response.text
+            reply = ask_lisa(user_id, user_text)
+
         if len(reply) > 4000:
             for i in range(0, len(reply), 4000):
                 await update.message.reply_text(reply[i:i+4000])
         else:
             await update.message.reply_text(reply)
+
     except Exception as e:
-        logger.error(f"Message handler error: {e}")
-        await update.message.reply_text("Oops! Kuch technical issue ho gaya. Thodi der baad try karo ya /start karo.")
+        logger.error(f"Message error: {type(e).__name__}: {e}")
+        await update.message.reply_text(f"Error: {type(e).__name__}: {str(e)[:300]}")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
+    await update.message.reply_text(
         "🎓 Lisa GK Tutor — Help\n\n"
-        "Commands:\n"
         "/start — Main menu\n"
         "/quiz — Random GK quiz\n"
         "/help — Ye message\n\n"
         "Topics: History | Geography | Science | Current Affairs | Polity | Sports\n\n"
-        "Example: 'Bharat ka pehla PM kaun tha?' ya 'Explain Article 370'\n\n"
-        "Koi bhi GK doubt ho — pooch lo! 😊"
+        "Koi bhi GK doubt ho — seedha type karo! 😊"
     )
-    await update.message.reply_text(help_text)
 
 
 def main():
-    print("🚀 Lisa GK Tutor Bot start ho raha hai...")
+    print("🚀 Lisa GK Tutor Bot (new SDK) start ho raha hai...")
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("quiz", quiz_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("✅ Lisa ready hai! Bot chal raha hai...")
+    print("✅ Lisa ready hai!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
