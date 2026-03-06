@@ -1,0 +1,5 @@
+[phases.setup]
+nixPkgs = ["python311"]
+
+[start]
+cmd = "python lisa_gk_tutor_bot.py"
